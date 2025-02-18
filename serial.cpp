@@ -1,5 +1,24 @@
 #include "common.h"
 #include <cmath>
+#include <unordered_map>
+#include <vector>
+
+#define BIN_SIZE 0.00001
+
+// Hash function for cell indexing
+struct CellHash {
+    size_t operator()(const std::pair<int, int>& p) const {
+        return std::hash<int>()(p.first) ^ std::hash<int>()(p.second);
+    }
+};
+
+// Spatial grid: maps cell (x, y) to list of particles
+std::unordered_map<std::pair<int, int>, std::vector<particle_t*>, CellHash> grid;
+
+// Function to get cell index from position
+std::pair<int, int> get_cell(double x, double y) {
+    return { (int)(x / BIN_SIZE), (int)(y / BIN_SIZE) };
+}
 
 // Apply the force from neighbor to particle
 void apply_force(particle_t& particle, particle_t& neighbor) {
@@ -50,11 +69,37 @@ void init_simulation(particle_t* parts, int num_parts, double size) {
 }
 
 void simulate_one_step(particle_t* parts, int num_parts, double size) {
-    // Compute Forces
+    // // Compute Forces
+    // for (int i = 0; i < num_parts; ++i) {
+    //     parts[i].ax = parts[i].ay = 0;
+    //     for (int j = 0; j < num_parts; ++j) {
+    //         apply_force(parts[i], parts[j]);
+    //     }
+    // }
+
+    grid.clear();
+
+    // Assign particles to grid cells
+    for (int i = 0; i < num_parts; ++i) {
+        std::pair<int, int> cell = get_cell(parts[i].x, parts[i].y);
+        grid[cell].push_back(&parts[i]);
+    }
+
+    // Compute Forces using binning
     for (int i = 0; i < num_parts; ++i) {
         parts[i].ax = parts[i].ay = 0;
-        for (int j = 0; j < num_parts; ++j) {
-            apply_force(parts[i], parts[j]);
+        std::pair<int, int> cell = get_cell(parts[i].x, parts[i].y);
+
+        // Check forces from own and neighboring cells
+        for (int dx = -1; dx <= 1; ++dx) {
+            for (int dy = -1; dy <= 1; ++dy) {
+                std::pair<int, int> neighbor = { cell.first + dx, cell.second + dy };
+                if (grid.find(neighbor) != grid.end()) {
+                    for (particle_t* other : grid[neighbor]) {
+                        apply_force(parts[i], *other);
+                    }
+                }
+            }
         }
     }
 
