@@ -3,21 +3,28 @@
 #include <unordered_map>
 #include <vector>
 
-#define BIN_SIZE 0.00001
+#define BIN_SIZE 0.01
 
-// Hash function for cell indexing
-struct CellHash {
-    size_t operator()(const std::pair<int, int>& p) const {
-        return std::hash<int>()(p.first) ^ std::hash<int>()(p.second);
+// Grid storage
+std::vector<std::vector<particle_t*>> grid;
+int num_bins;  // Number of bins in one dimension
+
+// Function to compute 1D index from (x, y) bin coordinates
+int bin_index(int x, int y) {
+    return y * num_bins + x;
+}
+
+// Assign particles to bins
+void bin_particles(particle_t* parts, int num_parts, double size) {
+    num_bins = (int)(size / BIN_SIZE);  
+    grid.clear();
+    grid.resize(num_bins * num_bins);  // Allocate bins
+
+    for (int i = 0; i < num_parts; ++i) {
+        int x = (int)(parts[i].x / BIN_SIZE);
+        int y = (int)(parts[i].y / BIN_SIZE);
+        grid[bin_index(x, y)].push_back(&parts[i]);
     }
-};
-
-// Spatial grid: maps cell (x, y) to list of particles
-std::unordered_map<std::pair<int, int>, std::vector<particle_t*>, CellHash> grid;
-
-// Function to get cell index from position
-std::pair<int, int> get_cell(double x, double y) {
-    return { (int)(x / BIN_SIZE), (int)(y / BIN_SIZE) };
 }
 
 // Apply the force from neighbor to particle
@@ -61,6 +68,38 @@ void move(particle_t& p, double size) {
     }
 }
 
+// Compute forces using binning
+void compute_forces(particle_t* parts, int num_parts, double size) {
+    for (int i = 0; i < num_parts; ++i) {
+        parts[i].ax = parts[i].ay = 0;
+
+        // Compute bin location
+        int x = (int)(parts[i].x / BIN_SIZE);
+        int y = (int)(parts[i].y / BIN_SIZE);
+
+        // Iterate over neighboring bins
+        for (int dx = -1; dx <= 1; ++dx) {
+            for (int dy = -1; dy <= 1; ++dy) {
+                int nx = x + dx;
+                int ny = y + dy;
+
+                // Ensure bin is within bounds
+                if (nx >= 0 && nx < num_bins && ny >= 0 && ny < num_bins) {
+                    for (particle_t* other : grid[bin_index(nx, ny)]) {
+                        apply_force(parts[i], *other);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Move particles
+void move_particles(particle_t* parts, int num_parts, double size) {
+    for (int i = 0; i < num_parts; ++i) {
+        move(parts[i], size);
+    }
+}
 
 void init_simulation(particle_t* parts, int num_parts, double size) {
 	// You can use this space to initialize static, global data objects
@@ -68,43 +107,10 @@ void init_simulation(particle_t* parts, int num_parts, double size) {
     // algorithm begins. Do not do any particle simulation here
 }
 
+// Simulation step
 void simulate_one_step(particle_t* parts, int num_parts, double size) {
-    // // Compute Forces
-    // for (int i = 0; i < num_parts; ++i) {
-    //     parts[i].ax = parts[i].ay = 0;
-    //     for (int j = 0; j < num_parts; ++j) {
-    //         apply_force(parts[i], parts[j]);
-    //     }
-    // }
-
-    grid.clear();
-
-    // Assign particles to grid cells
-    for (int i = 0; i < num_parts; ++i) {
-        std::pair<int, int> cell = get_cell(parts[i].x, parts[i].y);
-        grid[cell].push_back(&parts[i]);
-    }
-
-    // Compute Forces using binning
-    for (int i = 0; i < num_parts; ++i) {
-        parts[i].ax = parts[i].ay = 0;
-        std::pair<int, int> cell = get_cell(parts[i].x, parts[i].y);
-
-        // Check forces from own and neighboring cells
-        for (int dx = -1; dx <= 1; ++dx) {
-            for (int dy = -1; dy <= 1; ++dy) {
-                std::pair<int, int> neighbor = { cell.first + dx, cell.second + dy };
-                if (grid.find(neighbor) != grid.end()) {
-                    for (particle_t* other : grid[neighbor]) {
-                        apply_force(parts[i], *other);
-                    }
-                }
-            }
-        }
-    }
-
-    // Move Particles
-    for (int i = 0; i < num_parts; ++i) {
-        move(parts[i], size);
-    }
+    bin_particles(parts, num_parts, size);  // Assign to bins
+    compute_forces(parts, num_parts, size); // Compute interactions
+    move_particles(parts, num_parts, size); // Move particles
 }
+
