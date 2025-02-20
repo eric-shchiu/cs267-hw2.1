@@ -201,7 +201,7 @@ void simulate_one_step(particle_t* parts, int num_parts, double size) {
         bin_x = std::max(0, std::min(bin_x, num_bins_x - 1));
         bin_y = std::max(0, std::min(bin_y, num_bins_y - 1));
 
-        #pragma single
+        #pragma omp critical
         bins[bin_x][bin_y].push_back(i);
 
         // // Lock the mutex for the specific bin
