@@ -128,6 +128,17 @@ void simulate_one_step(particle_t* parts, int num_parts, double size) {
                     }
                 }
             }
+            
+            // Interactions with bottom-left bin
+            if (x - 1 >= 0 && y + 1 < num_bins_y) {
+                auto& bl_bin = bins[x - 1][y + 1];
+                for (int pi : current_bin) {
+                    for (int pj : bl_bin) {
+                        apply_force(parts[pi], parts[pj]);
+                        apply_force(parts[pj], parts[pi]);
+                    }
+                }
+            }
         }
     }
 
