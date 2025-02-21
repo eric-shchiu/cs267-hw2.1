@@ -1,52 +1,76 @@
 #include "common.h"
 #include <cmath>
-#include <unordered_map>
 #include <vector>
+#include <algorithm>
+#include <numeric>
 
-#define BIN_SIZE 0.01
+// Memory Layout Optimization: SoA Structure Definition
+struct Particles {
+    std::vector<double> x, y;      // Location
+    std::vector<double> vx, vy;    // Velocity
+    std::vector<double> ax, ay;    // Acceleration
 
-static double bin_size = cutoff; // bin size equals cutoff
-static int num_bins_x, num_bins_y;
-static std::vector<std::vector<std::vector<int>>> bins;
+    explicit Particles(int num) {
+        x.resize(num); y.resize(num);
+        vx.resize(num); vy.resize(num);
+        ax.resize(num); ay.resize(num);
+    }
+};
 
-// Apply the force from neighbor to particle
-void apply_force(particle_t& particle, particle_t& neighbor) {
-    // Calculate Distance
-    double dx = neighbor.x - particle.x;
-    double dy = neighbor.y - particle.y;
-    double r2 = dx * dx + dy * dy;
+// Global split-box data structure (flattened)
+static double bin_size = cutoff;      // bin size is fixed to cutoff
+static int num_bins_x, num_bins_y;    // Number of sub-cases
+static std::vector<int> bin_data;     // Stores particle indexes for all bins (one-dimensional contiguous memory)
+static std::vector<int> bin_offsets;  // Starting offset of each bin
+static std::vector<int> bin_counts;   // Number of particles per bin
 
-    // Check if the two particles should interact
-    if (r2 > cutoff * cutoff)
-        return;
+// Force Calculation Functions (Adapted to SoA)
+inline void apply_force_soa(
+    double x1, double y1, double& ax1, double& ay1,
+    double x2, double y2, double& ax2, double& ay2
+) {
+    const double dx = x2 - x1;
+    const double dy = y2 - y1;
+    const double r2 = dx * dx + dy * dy;
 
-    r2 = fmax(r2, min_r * min_r);
-    double r = sqrt(r2);
+    if (r2 > cutoff * cutoff) return;
 
-    // Very simple short-range repulsive force
-    double coef = (1 - cutoff / r) / r2 / mass;
-    particle.ax += coef * dx;
-    particle.ay += coef * dy;
+    const double r2_clamped = std::fmax(r2, min_r * min_r);
+    const double r = std::sqrt(r2_clamped);
+    const double coef = (1.0 - cutoff / r) / r2_clamped / mass;
+
+    ax1 += coef * dx;
+    ay1 += coef * dy;
+    ax2 -= coef * dx;
+    ay2 -= coef * dy;
 }
 
-// Integrate the ODE
-void move(particle_t& p, double size) {
-    // Slightly simplified Velocity Verlet integration
-    // Conserves energy better than explicit Euler method
-    p.vx += p.ax * dt;
-    p.vy += p.ay * dt;
-    p.x += p.vx * dt;
-    p.y += p.vy * dt;
+// Move Functions (Adaptation to SoA)
+inline void move_soa(
+    double& x, double& y,
+    double& vx, double& vy,
+    double ax, double ay,
+    double size
+) {
+    vx += ax * dt;
+    vy += ay * dt;
+    x += vx * dt;
+    y += vy * dt;
 
-    // Bounce from walls
-    while (p.x < 0 || p.x > size) {
-        p.x = p.x < 0 ? -p.x : 2 * size - p.x;
-        p.vx = -p.vx;
+    if (x < 0) {
+        x = -x;
+        vx = -vx;
+    } else if (x > size) {
+        x = 2 * size - x;
+        vx = -vx;
     }
 
-    while (p.y < 0 || p.y > size) {
-        p.y = p.y < 0 ? -p.y : 2 * size - p.y;
-        p.vy = -p.vy;
+    if (y < 0) {
+        y = -y;
+        vy = -vy;
+    } else if (y > size) {
+        y = 2 * size - y;
+        vy = -vy;
     }
 }
 
@@ -54,59 +78,98 @@ void init_simulation(particle_t* parts, int num_parts, double size) {
     bin_size = cutoff;
     num_bins_x = static_cast<int>(size / bin_size) + 1;
     num_bins_y = static_cast<int>(size / bin_size) + 1;
-    bins.resize(num_bins_x, std::vector<std::vector<int>>(num_bins_y));
+
+    const int total_bins = num_bins_x * num_bins_y;
+    bin_data.resize(num_parts);
+    bin_offsets.resize(total_bins + 1);
+    bin_counts.resize(total_bins, 0);
 }
 
 void simulate_one_step(particle_t* parts, int num_parts, double size) {
-    // Clear the bins
-    for (auto& row : bins) {
-        for (auto& bin : row) {
-            bin.clear();
-        }
+    Particles soa_parts(num_parts);
+    for (int i = 0; i < num_parts; ++i) {
+        soa_parts.x[i] = parts[i].x;
+        soa_parts.y[i] = parts[i].y;
+        soa_parts.vx[i] = parts[i].vx;
+        soa_parts.vy[i] = parts[i].vy;
+        soa_parts.ax[i] = 0.0;
+        soa_parts.ay[i] = 0.0;
     }
 
-    // assign the particles to bins
+    // Empty the count
+    std::fill(bin_counts.begin(), bin_counts.end(), 0);
+
+    // Sub-case statistics
     for (int i = 0; i < num_parts; ++i) {
-        int bin_x = static_cast<int>(parts[i].x / bin_size);
-        int bin_y = static_cast<int>(parts[i].y / bin_size);
+        int bin_x = static_cast<int>(soa_parts.x[i] / bin_size);
         bin_x = std::max(0, std::min(bin_x, num_bins_x - 1));
+        int bin_y = static_cast<int>(soa_parts.y[i] / bin_size);
         bin_y = std::max(0, std::min(bin_y, num_bins_y - 1));
-        bins[bin_x][bin_y].push_back(i);
+        const int bin_idx = bin_x * num_bins_y + bin_y;
+        bin_counts[bin_idx]++;
     }
 
-    // reset the acceleration
+    // Compute the prefix sum
+    bin_offsets[0] = 0;
+    std::partial_sum(bin_counts.begin(), bin_counts.end(), bin_offsets.begin() + 1);
+
+    // Filling data
+    std::fill(bin_counts.begin(), bin_counts.end(), 0);
     for (int i = 0; i < num_parts; ++i) {
-        parts[i].ax = 0.0;
-        parts[i].ay = 0.0;
+        int bin_x = static_cast<int>(soa_parts.x[i] / bin_size);
+        bin_x = std::max(0, std::min(bin_x, num_bins_x - 1));
+        int bin_y = static_cast<int>(soa_parts.y[i] / bin_size);
+        bin_y = std::max(0, std::min(bin_y, num_bins_y - 1));
+        const int bin_idx = bin_x * num_bins_y + bin_y;
+        const int pos = bin_offsets[bin_idx] + bin_counts[bin_idx]++;
+        bin_data[pos] = i;
     }
 
-    // Calculate the force
+    // Calculate forces
     for (int i = 0; i < num_parts; ++i) {
-        const int bin_x = std::max(0, std::min(static_cast<int>(parts[i].x / bin_size), num_bins_x - 1));
-        const int bin_y = std::max(0, std::min(static_cast<int>(parts[i].y / bin_size), num_bins_y - 1));
+        int bin_x = static_cast<int>(soa_parts.x[i] / bin_size);
+        bin_x = std::max(0, std::min(bin_x, num_bins_x - 1));
+        int bin_y = static_cast<int>(soa_parts.y[i] / bin_size);
+        bin_y = std::max(0, std::min(bin_y, num_bins_y - 1));
 
-        // Check the surrounding 9 bins
         for (int dx = -1; dx <= 1; ++dx) {
             for (int dy = -1; dy <= 1; ++dy) {
                 const int nb_x = bin_x + dx;
                 const int nb_y = bin_y + dy;
-                
-                if (nb_x < 0 || nb_x >= num_bins_x || nb_y < 0 || nb_y >= num_bins_y)
-                    continue;
+                if (nb_x < 0 || nb_x >= num_bins_x || nb_y < 0 || nb_y >= num_bins_y) continue;
 
-                // deal with the particles in the bin
-                for (const int j : bins[nb_x][nb_y]) {
-                    if (j > i) { // ensure treat each particle once
-                        apply_force(parts[i], parts[j]);
-                        apply_force(parts[j], parts[i]);
+                const int bin_idx = nb_x * num_bins_y + nb_y;
+                const int start = bin_offsets[bin_idx];
+                const int end = bin_offsets[bin_idx + 1];
+
+                for (int k = start; k < end; ++k) {
+                    const int j = bin_data[k];
+                    if (j > i) {
+                        apply_force_soa(
+                            soa_parts.x[i], soa_parts.y[i], soa_parts.ax[i], soa_parts.ay[i],
+                            soa_parts.x[j], soa_parts.y[j], soa_parts.ax[j], soa_parts.ay[j]
+                        );
                     }
                 }
             }
         }
     }
 
-    // move the particles
+    // Move particles
     for (int i = 0; i < num_parts; ++i) {
-        move(parts[i], size);
-   }
+        move_soa(
+            soa_parts.x[i], soa_parts.y[i],
+            soa_parts.vx[i], soa_parts.vy[i],
+            soa_parts.ax[i], soa_parts.ay[i],
+            size
+        );
+    }
+
+    // Copy back
+    for (int i = 0; i < num_parts; ++i) {
+        parts[i].x = soa_parts.x[i];
+        parts[i].y = soa_parts.y[i];
+        parts[i].vx = soa_parts.vx[i];
+        parts[i].vy = soa_parts.vy[i];
+    }
 }
