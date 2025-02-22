@@ -4,8 +4,6 @@
 #include <unordered_map>
 #include <vector>
 
-#define BIN_SIZE 0.01
-
 static double bin_size = cutoff;
 static int num_bins_x, num_bins_y;
 static std::vector<std::vector<std::vector<int>>> bins;
@@ -48,18 +46,6 @@ void move(particle_t& p, double size) {
     }
 }
 
-// Process neighboring bins
-void process_neighbor(const std::vector<int>& cur_bin, 
-    const std::vector<int>& nb_bin,
-    particle_t* parts) {
-    for (int p1 : cur_bin) {
-        for (int p2 : nb_bin) {
-            apply_force(parts[p1], parts[p2]);
-            apply_force(parts[p2], parts[p1]);
-            }
-    }
-}
-
 void init_simulation(particle_t* parts, int num_parts, double size) {
     bin_size = cutoff;
     num_bins_x = static_cast<int>(size / bin_size) + 1;
@@ -69,7 +55,7 @@ void init_simulation(particle_t* parts, int num_parts, double size) {
 
 void simulate_one_step(particle_t* parts, int num_parts, double size) {
     // Parallel bin clearing
-    #pragma omp for collapse(2)
+    #pragma omp for
     for (int x = 0; x < num_bins_x; ++x) {
         for (int y = 0; y < num_bins_y; ++y) {
             bins[x][y].clear();
@@ -94,35 +80,65 @@ void simulate_one_step(particle_t* parts, int num_parts, double size) {
     }
 
     // Parallel force computation
-    #pragma omp for collapse(2)
+    #pragma omp for
     for (int x = 0; x < num_bins_x; ++x) {
         for (int y = 0; y < num_bins_y; ++y) {
-            auto& cur_bin = bins[x][y];
-            const size_t n = cur_bin.size();
+            auto& current_bin = bins[x][y];
+            size_t size_current = current_bin.size();
 
-            // interact within the same bin
-            for (size_t i = 0; i < n; ++i) {
-                for (size_t j = i + 1; j < n; ++j) {
-                    particle_t& p1 = parts[cur_bin[i]];
-                    particle_t& p2 = parts[cur_bin[j]];
-                    apply_force(p1, p2);
-                    apply_force(p2, p1);
+            // Interactions within the current bin
+            for (size_t i = 0; i < size_current; ++i) {
+                for (size_t j = i + 1; j < size_current; ++j) {
+                    int pi = current_bin[i];
+                    int pj = current_bin[j];
+                    apply_force(parts[pi], parts[pj]);
+                    apply_force(parts[pj], parts[pi]);
                 }
             }
 
-            // interact with right bin
-            if (x+1 < num_bins_x) process_neighbor(cur_bin, bins[x+1][y], parts);
+            // Interactions with right bin
+            if (x + 1 < num_bins_x) {
+                auto& right_bin = bins[x + 1][y];
+                for (int pi : current_bin) {
+                    for (int pj : right_bin) {
+                        apply_force(parts[pi], parts[pj]);
+                        apply_force(parts[pj], parts[pi]);
+                    }
+                }
+            }
+
+            // Interactions with bottom bin
+            if (y + 1 < num_bins_y) {
+                auto& bottom_bin = bins[x][y + 1];
+                for (int pi : current_bin) {
+                    for (int pj : bottom_bin) {
+                        apply_force(parts[pi], parts[pj]);
+                        apply_force(parts[pj], parts[pi]);
+                    }
+                }
+            }
+
+            // Interactions with bottom-right bin
+            if (x + 1 < num_bins_x && y + 1 < num_bins_y) {
+                auto& br_bin = bins[x + 1][y + 1];
+                for (int pi : current_bin) {
+                    for (int pj : br_bin) {
+                        apply_force(parts[pi], parts[pj]);
+                        apply_force(parts[pj], parts[pi]);
+                    }
+                }
+            }
             
-            // interact with bottom bin
-            if (y+1 < num_bins_y) process_neighbor(cur_bin, bins[x][y+1], parts);
-            
-            // interact with bottom-right bin
-            if (x+1 < num_bins_x && y+1 < num_bins_y) 
-                process_neighbor(cur_bin, bins[x+1][y+1], parts);
-            
-            // interact with bottom-left bin
-            if (x > 0 && y+1 < num_bins_y) 
-                process_neighbor(cur_bin, bins[x-1][y+1], parts);
+            // Interactions with bottom-left bin
+            if (x - 1 >= 0 && y + 1 < num_bins_y) {
+                auto& bl_bin = bins[x - 1][y + 1];
+                for (int pi : current_bin) {
+                    for (int pj : bl_bin) {
+                        apply_force(parts[pi], parts[pj]);
+                        apply_force(parts[pj], parts[pi]);
+                    }
+                }
+            }
         }
     }
 

@@ -3,8 +3,6 @@
 #include <unordered_map>
 #include <vector>
 
-#define BIN_SIZE 0.01
-
 static double bin_size = cutoff; // bin size equals cutoff
 static int num_bins_x, num_bins_y;
 static std::vector<std::vector<std::vector<int>>> bins;
