@@ -3,10 +3,13 @@
 #include <omp.h>
 #include <unordered_map>
 #include <vector>
+#include <mutex>
+#include <memory>
 
 static double bin_size = cutoff;
 static int num_bins_x, num_bins_y;
 static std::vector<std::vector<std::vector<int>>> bins;
+static std::vector<std::vector<std::unique_ptr<std::mutex>>> lockers;
 
 // Modified apply_force with atomic operations
 void apply_force(particle_t& particle, particle_t& neighbor) {
@@ -51,6 +54,12 @@ void init_simulation(particle_t* parts, int num_parts, double size) {
     num_bins_x = static_cast<int>(size / bin_size) + 1;
     num_bins_y = static_cast<int>(size / bin_size) + 1;
     bins.resize(num_bins_x, std::vector<std::vector<int>>(num_bins_y));
+    for (int i = 0; i < num_bins_x; ++i){
+        lockers.emplace_back(std::vector<std::unique_ptr<std::mutex>>());
+        for (int j = 0; j < num_bins_y; ++j){
+            lockers[i].emplace_back(new std::mutex());
+        }
+    }
 }
 
 void simulate_one_step(particle_t* parts, int num_parts, double size) {
@@ -63,13 +72,16 @@ void simulate_one_step(particle_t* parts, int num_parts, double size) {
     }
 
     // Single-threaded bin assignment
-    #pragma omp single
+    #pragma omp for
     for (int i = 0; i < num_parts; ++i) {
         int bin_x = static_cast<int>(parts[i].x / bin_size);
         int bin_y = static_cast<int>(parts[i].y / bin_size);
         bin_x = std::max(0, std::min(bin_x, num_bins_x - 1));
         bin_y = std::max(0, std::min(bin_y, num_bins_y - 1));
+
+        lockers[bin_x][bin_y] -> lock();
         bins[bin_x][bin_y].push_back(i);
+        lockers[bin_x][bin_y] -> unlock();
     }
 
     // Parallel acceleration reset
