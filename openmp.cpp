@@ -5,6 +5,7 @@
 #include <vector>
 #include <mutex>
 #include <memory>
+#include "globals.h"
 
 static double bin_size = cutoff;
 static int num_bins_x, num_bins_y;
@@ -63,6 +64,7 @@ void init_simulation(particle_t* parts, int num_parts, double size) {
 }
 
 void simulate_one_step(particle_t* parts, int num_parts, double size) {
+    double comm_start_time = omp_get_wtime();
     // Parallel bin clearing
     #pragma omp for
     for (int x = 0; x < num_bins_x; ++x) {
@@ -90,7 +92,12 @@ void simulate_one_step(particle_t* parts, int num_parts, double size) {
         parts[i].ax = 0.0;
         parts[i].ay = 0.0;
     }
+    double comm_end_time = omp_get_wtime();
 
+    #pragma omp atomic
+    comm_time += (comm_end_time - comm_start_time); 
+
+    double comp_start_time = omp_get_wtime();
     // Parallel force computation
     #pragma omp for
     for (int x = 0; x < num_bins_x; ++x) {
@@ -159,4 +166,8 @@ void simulate_one_step(particle_t* parts, int num_parts, double size) {
     for (int i = 0; i < num_parts; ++i) {
         move(parts[i], size);
     }
+    double comp_end_time = omp_get_wtime();
+
+    #pragma omp atomic
+    comp_time += (comp_end_time - comp_start_time);
 }
